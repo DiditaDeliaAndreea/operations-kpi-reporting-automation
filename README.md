@@ -1,10 +1,12 @@
 # Process Quality KPI Reporting Automation
 
-A production-inspired portfolio project that automates the extraction, preparation, and export of Process Quality task data for weekly KPI reporting.
+A production-inspired portfolio project that automates the extraction, preparation, and weekly export of Process Quality task data for KPI reporting.
 
 The workflow uses **SQLite, SQL, Python, Pandas, OpenPyXL, and Excel formulas** to transform operational task records into structured team-level reports and performance insights.
 
-All task records, employee names, team names, tags, and performance figures in this repository are fictional and were created for demonstration purposes.
+The solution is designed to run automatically every Monday at **12:00 PM Europe/Dublin time** through a notebook platform’s built-in scheduler.
+
+All task records, employee names, team names, tags, and performance figures in this repository are fictional and were created specifically for demonstration purposes.
 
 ---
 
@@ -19,25 +21,26 @@ Process Quality teams often need to report on:
 - weekly performance changes;
 - task distribution across operational teams.
 
-The underlying task system may contain work completed by people from multiple teams, roles, or companies. This means that reporting cannot rely only on a task tag or only on the name of the person who completed the task.
+The underlying task system may contain work completed by people from several teams, roles, or companies. Reporting therefore cannot rely only on a task tag or only on the person who completed the task.
 
-This project recreates a reporting workflow in which:
+This project recreates a workflow in which:
 
 1. completed tasks are extracted from a centralized data source;
 2. task type is identified from task tags;
 3. reporting team is identified using both the team tag and agent name;
 4. SLA results are derived from a system-generated tag;
-5. prepared task-level data is exported to Excel;
-6. Excel formulas calculate weekly KPIs and week-over-week comparisons.
+5. prepared task-level data is exported into team-specific Excel tabs;
+6. existing Excel formulas calculate weekly KPIs and performance comparisons;
+7. the workflow is scheduled to run automatically every Monday.
 
 ---
 
 ## Business Problem
 
-The original reporting process required repeated manual work to:
+The reporting process previously required repeated manual work to:
 
 - extract completed operational tasks;
-- identify tasks completed during the reporting period;
+- identify tasks completed during the required reporting period;
 - review team-specific tags;
 - check which agent completed each task;
 - separate tasks into team-level reports;
@@ -54,40 +57,51 @@ A manual process can be:
 - difficult to scale;
 - prone to reporting errors.
 
-The purpose of this project is to demonstrate how the data-preparation portion of that workflow can be automated while keeping KPI calculations visible and editable in Excel.
+This project demonstrates how the data-extraction and preparation stages can be automated while keeping KPI calculations visible and editable in Excel.
 
 ---
 
 ## Solution
 
-The project separates the workflow into two parts.
+The project separates the workflow into three parts.
 
-### Python and SQL
+### SQL
 
-Python and SQL are responsible for:
+SQL is responsible for:
 
-- creating a simulated operational database;
-- extracting completed tasks;
+- querying the simulated centralized task system;
+- selecting closed tasks;
 - filtering the two most recently completed Monday-to-Sunday weeks;
-- combining task tags;
-- identifying task type;
+- excluding the current incomplete week;
+- joining tasks with their tags;
+- combining multiple tags into one extracted field.
+
+### Python
+
+Python is responsible for:
+
+- connecting to the SQLite database;
+- executing the extraction query;
+- preparing the results in Pandas;
+- identifying task types from tags;
 - identifying the correct reporting team;
+- filtering tasks using both the team tag and agent name;
 - classifying SLA results;
-- preparing structured reporting data;
-- exporting the data to Excel.
+- updating the team-specific Excel tabs.
 
 ### Excel
 
 Excel is responsible for:
 
+- combining the team-level data;
 - counting completed tasks;
-- counting tasks by task type;
+- counting tasks by type;
 - calculating SLA compliance;
 - calculating week-over-week changes;
 - comparing team performance;
 - presenting management-ready KPI summaries.
 
-This matches the original workflow, where Excel formulas were used for the final KPI calculations.
+The workbook’s `All Data` and `Summary` tabs contain manually maintained formulas. The Python workflow preserves these tabs and updates only the team-level task data.
 
 ---
 
@@ -104,18 +118,66 @@ Two completed reporting weeks
                 ↓
 Pandas data preparation
                 ↓
-Task type identification
+Task-type identification
                 ↓
 Agent and team-tag filtering
                 ↓
 SLA classification
                 ↓
-Team-level Excel tabs
+Team-level Excel tabs updated
                 ↓
-Excel KPI formulas
+Existing All Data formulas
+                ↓
+Existing Summary KPI formulas
                 ↓
 Weekly performance insights
 ```
+
+---
+
+## Automated Schedule
+
+The workflow is intended to run automatically every:
+
+```text
+Monday at 12:00 PM
+Timezone: Europe/Dublin
+```
+
+Scheduling is handled through the notebook platform’s built-in scheduler.
+
+The scheduling logic is not implemented inside the Python modules. Instead:
+
+1. the notebook imports and starts the workflow;
+2. the notebook platform stores the weekly schedule;
+3. the scheduler runs the notebook every Monday at 12:00 PM;
+4. the notebook executes the same modular Python workflow used locally.
+
+A notebook execution cell can call:
+
+```python
+from src.run_workflow import run_workflow
+
+run_workflow()
+```
+
+This design keeps the reporting logic separate from the scheduling platform.
+
+```text
+Notebook scheduler
+        ↓
+Monday at 12:00 PM
+        ↓
+run_workflow()
+        ↓
+SQL extraction
+        ↓
+Python preparation
+        ↓
+Excel team-tab update
+```
+
+The reporting-period logic is calculated dynamically in SQL, so the workflow extracts the correct two completed reporting weeks regardless of the exact day or time it is executed.
 
 ---
 
@@ -133,7 +195,12 @@ Sunday 23:59:59
 
 The current incomplete week is excluded.
 
-The reporting period is calculated directly in SQL, so the workflow returns the correct completed weeks regardless of which day it runs.
+For example, when the workflow runs on Monday, the extracted period contains:
+
+- the full week that ended the previous day;
+- the full week immediately before it.
+
+This provides two complete weekly datasets for week-over-week comparison.
 
 ---
 
@@ -168,7 +235,7 @@ A task is included in a team report only when both conditions are met:
 1. the task contains the relevant team tag;
 2. the agent who completed the task belongs to that team.
 
-This helps exclude work completed by people from unrelated teams, roles, or companies.
+This prevents work completed by unrelated teams, roles, or companies from being included incorrectly.
 
 ---
 
@@ -176,7 +243,7 @@ This helps exclude work completed by people from unrelated teams, roles, or comp
 
 Task type is identified from task tags.
 
-The project uses four fictional Process Quality task types.
+The project uses four fictional Process Quality task types:
 
 | Task-type tag | Reporting name |
 |---|---|
@@ -242,9 +309,9 @@ The dataset was intentionally designed to produce meaningful performance compari
 
 ---
 
-## Key Insights Demonstrated
+## Example Insights
 
-The sample report shows several positive week-over-week changes:
+The sample report demonstrates several week-over-week changes:
 
 - total completed tasks increased from 44 to 56;
 - overall task volume increased by 27.3%;
@@ -261,13 +328,14 @@ The workbook also supports team-level comparisons for:
 - task volume;
 - week-over-week volume change;
 - SLA compliance;
-- SLA compliance change.
+- SLA compliance change;
+- task-type distribution.
 
 ---
 
-## Excel Output
+## Excel Workbook
 
-The generated workbook contains:
+The existing Excel workbook contains:
 
 ```text
 Summary
@@ -279,9 +347,9 @@ Team Delta
 Team Epsilon
 ```
 
-### Team-tab columns
+### Team tabs
 
-Each team tab contains the following task-level data:
+Each team tab contains task-level data with the following columns:
 
 | Column | Description |
 |---|---|
@@ -292,23 +360,40 @@ Each team tab contains the following task-level data:
 | Completed Date | Date and time the task was closed |
 | SLA Breached | `Yes`, `No`, or `N/A` |
 
-### Excel KPI calculations
+### Protected formula tabs
 
-The example workbook uses formulas to calculate:
+The Python workflow does not write to:
+
+```text
+All Data
+Summary
+```
+
+These tabs contain manually created Excel formulas and reporting logic.
+
+The workflow:
+
+- opens the existing workbook;
+- preserves the `All Data` tab;
+- preserves the `Summary` tab;
+- updates only columns `A:F` in the team tabs;
+- preserves content outside the team data area;
+- saves the updated workbook back to the same output file.
+
+The `All Data` formulas combine records from all team tabs.
+
+The `Summary` formulas calculate metrics such as:
 
 - total completed tasks;
-- completed tasks by task type;
-- completed tasks by team;
+- task volumes by type;
+- task volumes by team;
 - SLA breaches;
 - SLA-met tasks;
 - SLA compliance percentage;
-- Priority Escalation volume share;
 - week-over-week task-volume change;
 - week-over-week percentage change;
 - team-level SLA change;
-- recent task-type volume share.
-
-The KPI calculations are intentionally completed in Excel rather than Python so that they remain visible, editable, and easy to review.
+- task-type volume share.
 
 ---
 
@@ -336,11 +421,13 @@ operations-kpi-reporting-automation/
 │   ├── excel_report.py
 │   └── run_workflow.py
 │
+├── notebooks/
+│   └── kpi_reporting_workflow.ipynb
+│
 ├── output/
 │   └── operations_kpi_report_<date-range>.xlsx
 │
 ├── docs/
-├── notebooks/
 ├── tests/
 ├── .gitignore
 ├── requirements.txt
@@ -428,13 +515,14 @@ Responsible for:
 
 Responsible for:
 
-- creating one final workbook;
-- creating separate team tabs;
-- writing task-level data;
-- formatting headers;
-- formatting dates;
-- creating Excel tables;
-- saving the report in the `output` folder.
+- opening the existing KPI workbook;
+- preserving `All Data`;
+- preserving `Summary`;
+- updating the five team tabs;
+- clearing and replacing only columns `A:F`;
+- maintaining team-level Excel tables;
+- formatting task data;
+- saving the updated workbook.
 
 ### `src/run_workflow.py`
 
@@ -444,8 +532,20 @@ Runs the complete process:
 extract
 → prepare
 → filter
-→ export
+→ update team tabs
+→ save workbook
 ```
+
+### `notebooks/kpi_reporting_workflow.ipynb`
+
+Acts as the scheduled workflow entry point.
+
+The notebook:
+
+- imports the modular workflow;
+- runs `run_workflow()`;
+- is scheduled through the notebook platform;
+- executes every Monday at 12:00 PM.
 
 ---
 
@@ -508,7 +608,7 @@ pip install -r requirements.txt
 
 ---
 
-## Running the Project
+## Running the Project Locally
 
 ### 1. Create the database
 
@@ -544,17 +644,44 @@ This applies:
 - SLA classification;
 - reporting-period preparation.
 
-### 4. Generate the Excel report
+### 4. Update the Excel report
+
+Close the existing Excel workbook before running:
 
 ```bash
 python -m src.run_workflow
 ```
 
-The generated workbook will be saved in:
+The workflow expects the completed workbook to already exist inside:
 
 ```text
 output/
 ```
+
+It updates the team tabs and preserves the workbook’s existing `All Data` and `Summary` formulas.
+
+---
+
+## Scheduled Execution
+
+In the notebook environment, the workflow is started with:
+
+```python
+from src.run_workflow import run_workflow
+
+run_workflow()
+```
+
+The notebook’s built-in scheduler is configured for:
+
+```text
+Frequency: Weekly
+Day: Monday
+Time: 12:00 PM
+Timezone: Europe/Dublin
+```
+
+This demonstrates how the workflow can operate as a recurring reporting process rather than requiring a person to run each module manually every week.
 
 ---
 
@@ -567,6 +694,7 @@ output/
 - OpenPyXL
 - Microsoft Excel
 - Excel formulas
+- Scheduled notebooks
 - Git
 - GitHub
 - Visual Studio Code
@@ -578,6 +706,7 @@ output/
 This project demonstrates practical experience with:
 
 - workflow automation;
+- scheduled automation;
 - Process Quality reporting;
 - KPI reporting;
 - operational data analysis;
@@ -591,11 +720,10 @@ This project demonstrates practical experience with:
 - team and agent mapping;
 - business-rule implementation;
 - SLA reporting;
-- Excel report generation;
-- Excel formulas;
+- Excel report maintenance;
+- formula preservation;
 - weekly performance reporting;
 - week-over-week analysis;
-- data visualization;
 - Git version control;
 - GitHub portfolio documentation.
 
@@ -626,16 +754,16 @@ Potential future enhancements include:
 
 - monthly KPI reporting;
 - month-over-month comparisons;
-- automated Excel charts;
+- additional Excel charts;
 - Power BI integration;
 - duplicate-task validation;
 - automated data-quality checks;
 - unit tests;
 - workflow logging;
 - configurable reporting periods;
-- scheduled execution;
 - automated email delivery;
-- report archiving.
+- report archiving;
+- failure notifications for scheduled runs.
 
 ---
 
@@ -651,4 +779,5 @@ Portfolio project focused on:
 - Process Quality;
 - KPI reporting;
 - operational reporting;
+- scheduled workflows;
 - continuous improvement.
