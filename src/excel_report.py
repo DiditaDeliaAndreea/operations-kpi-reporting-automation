@@ -1,11 +1,10 @@
-"""Create and populate the team-level KPI Excel report."""
+"""Update team tabs without modifying All Data or Summary."""
 
-from datetime import datetime, timedelta
+import os
 from pathlib import Path
-from zoneinfo import ZoneInfo
 
 import pandas as pd
-from openpyxl import Workbook
+from openpyxl import load_workbook
 from openpyxl.styles import Alignment, Font, PatternFill
 from openpyxl.worksheet.table import Table, TableStyleInfo
 
@@ -17,8 +16,10 @@ from src.team_mapping import TEAM_CONFIG
 BASE_DIR = Path(__file__).resolve().parents[1]
 OUTPUT_DIR = BASE_DIR / "output"
 
-DUBLIN_TIMEZONE = ZoneInfo("Europe/Dublin")
-
+PROTECTED_SHEETS = {
+    "All Data",
+    "Summary",
+}
 
 TEAM_HEADERS = [
     "Team",
@@ -28,7 +29,6 @@ TEAM_HEADERS = [
     "Completed Date",
     "SLA Breached",
 ]
-
 
 HEADER_FILL = PatternFill(
     fill_type="solid",
@@ -40,20 +40,148 @@ HEADER_FONT = Font(
     bold=True,
 )
 
-TITLE_FONT = Font(
-    size=16,
-    bold=True,
-)
 
-LABEL_FONT = Font(
-    bold=True,
-)
+def find_existing_report() -> Path:
+    """
+    Find the existing KPI workbook in the output folder.
+
+    The workflow expects exactly one KPI workbook so that it can
+    update that workbook without creating or deleting another one.
+    """
+
+    OUTPUT_DIR.mkdir(
+        parents=True,
+        exist_ok=True,
+    )
+
+    reports = sorted(
+        report
+        for report in OUTPUT_DIR.glob(
+            "operations_kpi_report*.xlsx"
+        )
+        if not report.name.startswith("~$")
+    )
+
+    if not reports:
+        raise FileNotFoundError(
+            "No existing KPI workbook was found in the output folder. "
+            "Place the completed workbook containing the All Data and "
+            "Summary tabs in output before running the workflow."
+        )
+
+    if len(reports) > 1:
+        report_names = "\n".join(
+            f"- {report.name}"
+            for report in reports
+        )
+
+        raise RuntimeError(
+            "More than one KPI workbook was found in the output folder. "
+            "Keep only the workbook that should be updated:\n"
+            f"{report_names}"
+        )
+
+    return reports[0]
 
 
-def format_header_row(worksheet) -> None:
-    """Apply formatting to a team worksheet header."""
+def snapshot_sheet(worksheet) -> dict:
+    """
+    Capture the contents of a protected worksheet.
 
-    for cell in worksheet[1]:
+    The snapshot is used to verify that the All Data and Summary
+    worksheets remain unchanged after the workbook is saved.
+    """
+
+    values = tuple(
+        tuple(
+            worksheet.cell(
+                row=row_number,
+                column=column_number,
+            ).value
+            for column_number in range(
+                1,
+                worksheet.max_column + 1,
+            )
+        )
+        for row_number in range(
+            1,
+            worksheet.max_row + 1,
+        )
+    )
+
+    merged_ranges = tuple(
+        sorted(
+            str(cell_range)
+            for cell_range
+            in worksheet.merged_cells.ranges
+        )
+    )
+
+    return {
+        "max_row": worksheet.max_row,
+        "max_column": worksheet.max_column,
+        "values": values,
+        "merged_ranges": merged_ranges,
+    }
+
+
+def snapshot_protected_sheets(
+    workbook,
+) -> dict[str, dict]:
+    """Capture the contents of All Data and Summary."""
+
+    missing_sheets = (
+        PROTECTED_SHEETS
+        - set(workbook.sheetnames)
+    )
+
+    if missing_sheets:
+        missing_names = ", ".join(
+            sorted(missing_sheets)
+        )
+
+        raise KeyError(
+            "The existing workbook is missing the following "
+            f"protected sheet or sheets: {missing_names}"
+        )
+
+    return {
+        sheet_name: snapshot_sheet(
+            workbook[sheet_name]
+        )
+        for sheet_name in PROTECTED_SHEETS
+    }
+
+
+def create_table_name(
+    team_name: str,
+) -> str:
+    """Create a valid Excel table name for a team."""
+
+    cleaned_name = "".join(
+        character
+        for character in team_name
+        if character.isalnum()
+    )
+
+    return f"{cleaned_name}Tasks"
+
+
+def format_team_header(
+    worksheet,
+) -> None:
+    """Format the team-tab header row."""
+
+    for column_number, header in enumerate(
+        TEAM_HEADERS,
+        start=1,
+    ):
+        cell = worksheet.cell(
+            row=1,
+            column=column_number,
+            value=header,
+        )
+
         cell.fill = HEADER_FILL
         cell.font = HEADER_FONT
         cell.alignment = Alignment(
@@ -65,11 +193,7 @@ def format_header_row(worksheet) -> None:
     worksheet.freeze_panes = "A2"
     worksheet.row_dimensions[1].height = 30
 
-
-def set_team_sheet_widths(worksheet) -> None:
-    """Set readable widths for team worksheet columns."""
-
-    widths = {
+    column_widths = {
         "A": 18,
         "B": 34,
         "C": 16,
@@ -78,41 +202,60 @@ def set_team_sheet_widths(worksheet) -> None:
         "F": 16,
     }
 
-    for column, width in widths.items():
-        worksheet.column_dimensions[column].width = width
+    for column_letter, width in (
+        column_widths.items()
+    ):
+        worksheet.column_dimensions[
+            column_letter
+        ].width = width
 
 
-def set_summary_sheet_widths(worksheet) -> None:
-    """Set readable widths for the Summary worksheet."""
+def remove_team_tables(
+    worksheet,
+) -> None:
+    """
+    Remove tables from the team data area.
 
-    worksheet.column_dimensions["A"].width = 30
-    worksheet.column_dimensions["B"].width = 22
+    They are recreated after the new records are written. This does
+    not affect tables or formulas on All Data or Summary.
+    """
+
+    for table_name in list(
+        worksheet.tables.keys()
+    ):
+        table = worksheet.tables[
+            table_name
+        ]
+
+        table_range = table.ref.upper()
+
+        if table_range.startswith("A1:F"):
+            del worksheet.tables[
+                table_name
+            ]
 
 
-def create_workbook() -> Workbook:
-    """Create the complete KPI workbook in memory."""
+def clear_existing_team_data(
+    worksheet,
+) -> None:
+    """
+    Clear only columns A:F below the header.
 
-    workbook = Workbook()
+    Columns G onward are not changed, so any manual KPI formulas or
+    other content on the team worksheet are preserved.
+    """
 
-    summary_sheet = workbook.active
-    summary_sheet.title = "Summary"
+    if worksheet.max_row < 2:
+        return
 
-    summary_sheet["A1"] = "Operations KPI Report"
-    summary_sheet["A1"].font = TITLE_FONT
-
-    set_summary_sheet_widths(summary_sheet)
-
-    for team_name in TEAM_CONFIG:
-        worksheet = workbook.create_sheet(
-            title=team_name
-        )
-
-        worksheet.append(TEAM_HEADERS)
-
-        format_header_row(worksheet)
-        set_team_sheet_widths(worksheet)
-
-    return workbook
+    for row in worksheet.iter_rows(
+        min_row=2,
+        max_row=worksheet.max_row,
+        min_col=1,
+        max_col=6,
+    ):
+        for cell in row:
+            cell.value = None
 
 
 def convert_excel_value(value):
@@ -127,239 +270,220 @@ def convert_excel_value(value):
     return value
 
 
-def create_table_name(team_name: str) -> str:
-    """Create a valid Excel table name."""
-
-    cleaned_name = "".join(
-        character
-        for character in team_name
-        if character.isalnum()
-    )
-
-    return f"{cleaned_name}Tasks"
-
-
 def write_team_sheet(
     worksheet,
     team_df: pd.DataFrame,
     team_name: str,
 ) -> None:
-    """Write one team's task records into its worksheet."""
+    """
+    Replace the task data in one team tab.
 
-    for row in team_df.itertuples(index=False):
-        worksheet.append(
-            [
-                convert_excel_value(row.team_name),
-                convert_excel_value(row.task_type),
-                convert_excel_value(row.task_id),
-                convert_excel_value(row.created_at),
-                convert_excel_value(row.completed_at),
-                convert_excel_value(row.sla_breached),
-            ]
-        )
+    Only columns A:F are updated.
+    """
 
-    if worksheet.max_row > 1:
-        table_reference = (
-            f"A1:F{worksheet.max_row}"
-        )
-
-        table = Table(
-            displayName=create_table_name(team_name),
-            ref=table_reference,
-        )
-
-        table.tableStyleInfo = TableStyleInfo(
-            name="TableStyleMedium2",
-            showFirstColumn=False,
-            showLastColumn=False,
-            showRowStripes=True,
-            showColumnStripes=False,
-        )
-
-        worksheet.add_table(table)
-
-    for cell in worksheet["D"][1:]:
-        cell.number_format = "yyyy-mm-dd hh:mm"
-
-    for cell in worksheet["E"][1:]:
-        cell.number_format = "yyyy-mm-dd hh:mm"
-
-    for cell in worksheet["F"][1:]:
-        cell.alignment = Alignment(
-            horizontal="center",
-        )
-
-
-def get_reporting_weeks(
-    reporting_df: pd.DataFrame,
-) -> tuple:
-    """Return the two reporting-week date ranges."""
-
-    week_starts = sorted(
-        pd.to_datetime(
-            reporting_df["reporting_week"]
-        )
-        .dt.date
-        .unique()
+    remove_team_tables(
+        worksheet
     )
 
-    if len(week_starts) < 2:
-        raise ValueError(
-            "At least two reporting weeks are required."
-        )
-
-    older_week_start = week_starts[-2]
-    recent_week_start = week_starts[-1]
-
-    older_week_end = (
-        older_week_start
-        + timedelta(days=6)
+    clear_existing_team_data(
+        worksheet
     )
 
-    recent_week_end = (
-        recent_week_start
-        + timedelta(days=6)
+    format_team_header(
+        worksheet
     )
 
-    return (
-        older_week_start,
-        older_week_end,
-        recent_week_start,
-        recent_week_end,
-    )
+    start_row = 2
 
-
-def write_summary_sheet(
-    workbook: Workbook,
-    reporting_df: pd.DataFrame,
-) -> None:
-    """Write basic report information without KPI formulas."""
-
-    worksheet = workbook["Summary"]
-
-    (
-        older_week_start,
-        older_week_end,
-        recent_week_start,
-        recent_week_end,
-    ) = get_reporting_weeks(reporting_df)
-
-    summary_values = [
-        (
-            "Older Reporting Week Start",
-            older_week_start,
-        ),
-        (
-            "Older Reporting Week End",
-            older_week_end,
-        ),
-        (
-            "Recent Reporting Week Start",
-            recent_week_start,
-        ),
-        (
-            "Recent Reporting Week End",
-            recent_week_end,
-        ),
-        (
-            "Generated At",
-            datetime.now(
-                DUBLIN_TIMEZONE
-            ).replace(tzinfo=None),
-        ),
-        (
-            "Total Tasks Included",
-            len(reporting_df),
-        ),
-    ]
-
-    for row_number, (
-        label,
-        value,
-    ) in enumerate(
-        summary_values,
-        start=3,
+    for row_number, row in enumerate(
+        team_df.itertuples(index=False),
+        start=start_row,
     ):
         worksheet.cell(
             row=row_number,
             column=1,
-            value=label,
-        ).font = LABEL_FONT
+            value=convert_excel_value(
+                row.team_name
+            ),
+        )
 
         worksheet.cell(
             row=row_number,
             column=2,
-            value=value,
+            value=convert_excel_value(
+                row.task_type
+            ),
         )
 
-    for cell_reference in [
-        "B3",
-        "B4",
-        "B5",
-        "B6",
-    ]:
-        worksheet[cell_reference].number_format = (
-            "yyyy-mm-dd"
+        worksheet.cell(
+            row=row_number,
+            column=3,
+            value=convert_excel_value(
+                row.task_id
+            ),
         )
 
-    worksheet["B7"].number_format = (
-        "yyyy-mm-dd hh:mm"
+        worksheet.cell(
+            row=row_number,
+            column=4,
+            value=convert_excel_value(
+                row.created_at
+            ),
+        )
+
+        worksheet.cell(
+            row=row_number,
+            column=5,
+            value=convert_excel_value(
+                row.completed_at
+            ),
+        )
+
+        worksheet.cell(
+            row=row_number,
+            column=6,
+            value=convert_excel_value(
+                row.sla_breached
+            ),
+        )
+
+    last_data_row = (
+        len(team_df)
+        + 1
     )
 
+    if not team_df.empty:
+        table_reference = (
+            f"A1:F{last_data_row}"
+        )
 
-def remove_old_reports() -> None:
-    """Remove previously generated KPI workbooks."""
+        table = Table(
+            displayName=create_table_name(
+                team_name
+            ),
+            ref=table_reference,
+        )
 
-    OUTPUT_DIR.mkdir(
-        parents=True,
-        exist_ok=True,
+        table.tableStyleInfo = (
+            TableStyleInfo(
+                name="TableStyleMedium2",
+                showFirstColumn=False,
+                showLastColumn=False,
+                showRowStripes=True,
+                showColumnStripes=False,
+            )
+        )
+
+        worksheet.add_table(
+            table
+        )
+
+    if last_data_row >= 2:
+        for cell in worksheet[
+            f"D2:D{last_data_row}"
+        ][0]:
+            cell.number_format = (
+                "yyyy-mm-dd hh:mm"
+            )
+
+        for cell in worksheet[
+            f"E2:E{last_data_row}"
+        ][0]:
+            cell.number_format = (
+                "yyyy-mm-dd hh:mm"
+            )
+
+        for cell in worksheet[
+            f"F2:F{last_data_row}"
+        ][0]:
+            cell.alignment = Alignment(
+                horizontal="center",
+            )
+
+
+def verify_protected_sheets(
+    original_snapshots: dict[str, dict],
+    saved_workbook,
+) -> None:
+    """
+    Confirm that All Data and Summary remain unchanged.
+
+    The original workbook is not replaced if this check fails.
+    """
+
+    saved_snapshots = (
+        snapshot_protected_sheets(
+            saved_workbook
+        )
     )
 
-    for existing_report in OUTPUT_DIR.glob(
-        "operations_kpi_report*.xlsx"
-    ):
-        try:
-            existing_report.unlink()
+    changed_sheets = [
+        sheet_name
+        for sheet_name
+        in PROTECTED_SHEETS
+        if saved_snapshots[sheet_name]
+        != original_snapshots[sheet_name]
+    ]
 
-        except PermissionError as error:
-            raise PermissionError(
-                "Close the existing Excel report before "
-                "running the workflow again."
-            ) from error
+    if changed_sheets:
+        changed_names = ", ".join(
+            sorted(changed_sheets)
+        )
+
+        raise RuntimeError(
+            "The protected worksheet verification failed. "
+            "The following worksheet contents changed during "
+            f"the save process: {changed_names}"
+        )
 
 
 def export_kpi_report(
     reporting_df: pd.DataFrame,
 ) -> Path:
-    """Create and save one final KPI workbook."""
+    """
+    Update only the team tabs in the existing KPI workbook.
+
+    All Data and Summary are loaded and preserved but are never
+    written to by this workflow.
+    """
 
     if reporting_df.empty:
         raise ValueError(
             "No reporting data is available to export."
         )
 
-    (
-        older_week_start,
-        _,
-        _,
-        recent_week_end,
-    ) = get_reporting_weeks(reporting_df)
+    report_path = find_existing_report()
 
-    remove_old_reports()
+    try:
+        workbook = load_workbook(
+            filename=report_path,
+            data_only=False,
+            keep_links=True,
+        )
 
-    output_path = (
-        OUTPUT_DIR
-        / (
-            "operations_kpi_report_"
-            f"{older_week_start}_to_"
-            f"{recent_week_end}.xlsx"
+    except PermissionError as error:
+        raise PermissionError(
+            "Close the Excel workbook before running "
+            "the workflow."
+        ) from error
+
+    protected_snapshots = (
+        snapshot_protected_sheets(
+            workbook
         )
     )
 
-    workbook = create_workbook()
-
     for team_name in TEAM_CONFIG:
-        worksheet = workbook[team_name]
+        if team_name not in workbook.sheetnames:
+            worksheet = (
+                workbook.create_sheet(
+                    title=team_name
+                )
+            )
+        else:
+            worksheet = workbook[
+                team_name
+            ]
 
         team_df = (
             reporting_df[
@@ -373,6 +497,7 @@ def export_kpi_report(
                     "task_id",
                 ]
             )
+            .reset_index(drop=True)
         )
 
         write_team_sheet(
@@ -381,31 +506,93 @@ def export_kpi_report(
             team_name=team_name,
         )
 
-    write_summary_sheet(
-        workbook=workbook,
-        reporting_df=reporting_df,
+    # Request recalculation when the workbook is opened in Excel.
+    # This does not write to the protected worksheets.
+    workbook.calculation.fullCalcOnLoad = True
+    workbook.calculation.forceFullCalc = True
+    workbook.calculation.calcMode = "auto"
+
+    temporary_path = report_path.with_name(
+        f"{report_path.stem}.temporary.xlsx"
     )
 
-    workbook.save(output_path)
+    try:
+        workbook.save(
+            temporary_path
+        )
 
-    return output_path
+        saved_workbook = load_workbook(
+            filename=temporary_path,
+            data_only=False,
+            keep_links=True,
+        )
+
+        verify_protected_sheets(
+            original_snapshots=(
+                protected_snapshots
+            ),
+            saved_workbook=(
+                saved_workbook
+            ),
+        )
+
+        saved_workbook.close()
+        workbook.close()
+
+        os.replace(
+            temporary_path,
+            report_path,
+        )
+
+    except PermissionError as error:
+        if temporary_path.exists():
+            temporary_path.unlink()
+
+        raise PermissionError(
+            "Close the Excel workbook before running "
+            "the workflow."
+        ) from error
+
+    except Exception:
+        if temporary_path.exists():
+            temporary_path.unlink()
+
+        raise
+
+    return report_path
 
 
 if __name__ == "__main__":
-    extracted_tasks_df = extract_completed_tasks()
+    extracted_tasks_df = (
+        extract_completed_tasks()
+    )
 
-    reporting_df = prepare_reporting_data(
-        extracted_tasks_df
+    reporting_df = (
+        prepare_reporting_data(
+            extracted_tasks_df
+        )
     )
 
     if reporting_df.empty:
         print(
-            "No tasks were available for Excel reporting."
+            "No tasks were available "
+            "for Excel reporting."
         )
     else:
-        report_path = export_kpi_report(
-            reporting_df
+        report_path = (
+            export_kpi_report(
+                reporting_df
+            )
         )
 
-        print("Excel report created successfully:")
+        print(
+            "Existing Excel report "
+            "updated successfully:"
+        )
+
         print(report_path)
+
+        print(
+            "The All Data and Summary tabs "
+            "were preserved."
+        )
