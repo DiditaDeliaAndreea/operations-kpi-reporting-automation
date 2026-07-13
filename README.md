@@ -35,6 +35,14 @@ This project recreates a workflow in which:
 
 ---
 
+## Report Preview
+
+The Excel summary presents weekly task volumes, SLA performance, task-type distribution, and team-level week-over-week comparisons.
+
+![Process Quality KPI summary dashboard](docs/images/kpi-summary-dashboard.png)
+
+---
+
 ## Business Problem
 
 The reporting process previously required repeated manual work to:
@@ -346,6 +354,15 @@ Team Gamma
 Team Delta
 Team Epsilon
 ```
+---
+
+### Example team report
+
+The workflow filters and writes task-level records into the appropriate team worksheet.
+
+![Example Team Alpha task-level report](docs/images/team-alpha-report.png)
+
+---
 
 ### Team tabs
 
@@ -394,6 +411,14 @@ The `Summary` formulas calculate metrics such as:
 - week-over-week percentage change;
 - team-level SLA change;
 - task-type volume share.
+
+---
+
+### Formula-driven reporting
+
+The `All Data` and `Summary` worksheets retain their existing Excel formulas. Python updates only the team-level source data.
+
+![Excel formulas used for KPI reporting](docs/images/excel-formula-reporting.png)
 
 ---
 
